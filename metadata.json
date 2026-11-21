@@ -1,0 +1,6 @@
+{
+  "name": "MiTa Clock",
+  "description": "PWA móvil de control horario para centro deportivo con cola offline y sincronización REST con MiTa v2.0.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
