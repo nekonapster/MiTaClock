@@ -197,40 +197,189 @@ export class PgClockRepository implements ClockRepository {
 
     const shouldSeedDemo =
       options.seedDemoData ?? process.env.SEED_DEMO_DATA?.trim().toLowerCase() === 'true';
-    if (!shouldSeedDemo) {
-      return;
+    const seedPassword =
+      options.seedDemoPassword ?? process.env.SEED_DEMO_PASSWORD?.trim() ?? '';
+    const seedHash = seedPassword ? bcrypt.hashSync(seedPassword, 10) : null;
+    const mustChangePassword = options.demoMustChangePassword ?? true;
+
+    if (shouldSeedDemo) {
+      const countRes = await this.executor.query<{ cnt: number }>(
+        'SELECT COUNT(*)::int AS cnt FROM users',
+      );
+      if ((countRes.rows[0]?.cnt ?? 0) === 0) {
+        await this.executor.withTransaction(async (tx) => {
+          for (const seed of DEMO_SEEDS) {
+            await tx.query(
+              `
+                INSERT INTO users (
+                  id, email, password_hash, role, is_active, is_demo, must_change_password, created_at
+                ) VALUES ($1, $2, $3, $4, TRUE, TRUE, $5, $6)
+              `,
+              [seed.userId, seed.email, seedHash, seed.role, mustChangePassword, now],
+            );
+            await tx.query(
+              `
+                INSERT INTO employees (id, user_id, external_ref, name, status, created_at)
+                VALUES ($1, $2, $3, $4, 'active', $5)
+              `,
+              [seed.employeeId, seed.userId, seed.externalRef, seed.name, now],
+            );
+          }
+        });
+
+        await this.seedDemoPlanning(now);
+      } else if (options.repairDemoAccounts) {
+        await this.executor.withTransaction(async (tx) => {
+          for (const seed of DEMO_SEEDS) {
+            const existingUser = await tx.query<{
+              id: string;
+              password_hash: string | null;
+              must_change_password: boolean;
+              is_active: boolean;
+              is_demo: boolean;
+              role: UserRole;
+            }>(
+              'SELECT id, password_hash, must_change_password, is_active, is_demo, role FROM users WHERE LOWER(email) = LOWER($1)',
+              [seed.email],
+            );
+
+            let userId = existingUser.rows[0]?.id;
+            if (!existingUser.rows[0]) {
+              await tx.query(
+                `
+                  INSERT INTO users (
+                    id, email, password_hash, role, is_active, is_demo, must_change_password, created_at
+                  ) VALUES ($1, $2, $3, $4, TRUE, TRUE, $5, $6)
+                `,
+                [seed.userId, seed.email, seedHash, seed.role, mustChangePassword, now],
+              );
+              userId = seed.userId;
+            } else {
+              const u = existingUser.rows[0];
+              const nextHash = u.password_hash ?? seedHash;
+              const nextMustChange =
+                !mustChangePassword && u.must_change_password ? false : u.must_change_password;
+              if (
+                nextHash !== u.password_hash ||
+                nextMustChange !== u.must_change_password ||
+                !u.is_active ||
+                !u.is_demo ||
+                u.role !== seed.role
+              ) {
+                await tx.query(
+                  `
+                    UPDATE users
+                    SET password_hash = $1,
+                        must_change_password = $2,
+                        is_active = TRUE,
+                        is_demo = TRUE,
+                        role = $3
+                    WHERE id = $4
+                  `,
+                  [nextHash, nextMustChange, seed.role, u.id],
+                );
+              }
+            }
+
+            if (userId) {
+              const existingEmp = await tx.query<{ id: string; status: string }>(
+                'SELECT id, status FROM employees WHERE user_id = $1',
+                [userId],
+              );
+              if (!existingEmp.rows[0]) {
+                await tx.query(
+                  `
+                    INSERT INTO employees (id, user_id, external_ref, name, status, created_at)
+                    VALUES ($1, $2, $3, $4, 'active', $5)
+                  `,
+                  [seed.employeeId, userId, seed.externalRef, seed.name, now],
+                );
+              } else if (existingEmp.rows[0].status !== 'active') {
+                await tx.query(`UPDATE employees SET status = 'active' WHERE id = $1`, [
+                  existingEmp.rows[0].id,
+                ]);
+              }
+            }
+          }
+        });
+
+        const tplCount = await this.executor.query<{ cnt: number }>(
+          'SELECT COUNT(*)::int AS cnt FROM shift_templates',
+        );
+        if ((tplCount.rows[0]?.cnt ?? 0) === 0) {
+          await this.seedDemoPlanning(now);
+        }
+      }
     }
 
-    const countRes = await this.executor.query<{ cnt: number }>(
-      'SELECT COUNT(*)::int AS cnt FROM users',
-    );
-    if ((countRes.rows[0]?.cnt ?? 0) === 0) {
-      const seedPassword =
-        options.seedDemoPassword ?? process.env.SEED_DEMO_PASSWORD?.trim() ?? '';
-      const seedHash = seedPassword ? bcrypt.hashSync(seedPassword, 10) : null;
-      const mustChangePassword = options.demoMustChangePassword ?? true;
+    const bootstrapEmail =
+      options.bootstrapAdmin?.email?.trim().toLowerCase() ||
+      process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase() ||
+      '';
+    const bootstrapPassword =
+      options.bootstrapAdmin?.password || process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
+    const bootstrapName =
+      options.bootstrapAdmin?.name?.trim() ||
+      process.env.BOOTSTRAP_ADMIN_NAME?.trim() ||
+      'Administrador MiTa';
+    const resetIfExists =
+      options.bootstrapAdmin?.resetPasswordIfExists ??
+      process.env.BOOTSTRAP_ADMIN_RESET?.trim().toLowerCase() === 'true';
 
+    if (bootstrapEmail && bootstrapPassword.length >= 8) {
+      const hash = bcrypt.hashSync(bootstrapPassword, 10);
       await this.executor.withTransaction(async (tx) => {
-        for (const seed of DEMO_SEEDS) {
+        const existing = await tx.query<{ id: string }>(
+          'SELECT id FROM users WHERE LOWER(email) = LOWER($1)',
+          [bootstrapEmail],
+        );
+        if (!existing.rows[0]) {
+          const userId = crypto.randomUUID();
+          const empId = crypto.randomUUID();
           await tx.query(
             `
               INSERT INTO users (
                 id, email, password_hash, role, is_active, is_demo, must_change_password, created_at
-              ) VALUES ($1, $2, $3, $4, TRUE, TRUE, $5, $6)
+              ) VALUES ($1, $2, $3, 'admin', TRUE, FALSE, FALSE, $4)
             `,
-            [seed.userId, seed.email, seedHash, seed.role, mustChangePassword, now],
+            [userId, bootstrapEmail, hash, now],
           );
           await tx.query(
             `
               INSERT INTO employees (id, user_id, external_ref, name, status, created_at)
-              VALUES ($1, $2, $3, $4, 'active', $5)
+              VALUES ($1, $2, NULL, $3, 'active', $4)
             `,
-            [seed.employeeId, seed.userId, seed.externalRef, seed.name, now],
+            [empId, userId, bootstrapName, now],
           );
+        } else if (resetIfExists) {
+          const userId = existing.rows[0].id;
+          await tx.query(
+            `
+              UPDATE users
+              SET password_hash = $1, role = 'admin', is_active = TRUE, must_change_password = FALSE
+              WHERE id = $2
+            `,
+            [hash, userId],
+          );
+          const empRes = await tx.query<{ id: string }>(
+            'SELECT id FROM employees WHERE user_id = $1',
+            [userId],
+          );
+          if (!empRes.rows[0]) {
+            await tx.query(
+              `
+                INSERT INTO employees (id, user_id, external_ref, name, status, created_at)
+                VALUES ($1, $2, NULL, $3, 'active', $4)
+              `,
+              [crypto.randomUUID(), userId, bootstrapName, now],
+            );
+          } else {
+            await tx.query(`UPDATE employees SET status = 'active' WHERE id = $1`, [
+              empRes.rows[0].id,
+            ]);
+          }
         }
       });
-
-      await this.seedDemoPlanning(now);
     }
   }
 

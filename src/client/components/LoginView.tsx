@@ -12,6 +12,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onAuthenticated }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [demoAccounts, setDemoAccounts] = useState<DemoAccountInfo[]>([]);
+  const [demoPasswordHint, setDemoPasswordHint] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [demoLoadingEmail, setDemoLoadingEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,6 +27,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onAuthenticated }) => {
       .then((res) => {
         if (active && res.enabled) {
           setDemoAccounts(res.accounts);
+          setDemoPasswordHint(res.defaultPasswordHint ?? null);
         }
       })
       .catch(() => {
@@ -179,6 +181,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ onAuthenticated }) => {
               </h2>
               <p className="mt-1 text-xs text-slate-500">
                 Selecciona uno de los perfiles de ejemplo para probar la app inmediatamente.
+                {demoPasswordHint && (
+                  <span className="mt-1 block font-mono text-[11px] text-slate-600">
+                    Admin: admin@mitaclock.es · Contraseña pruebas: {demoPasswordHint}
+                  </span>
+                )}
               </p>
 
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">

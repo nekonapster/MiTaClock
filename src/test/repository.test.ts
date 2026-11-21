@@ -33,8 +33,46 @@ describe('PgClockRepository — modelo append-only, migraciones, semillas e idem
       expect(noEmployees).toHaveLength(0);
       expect(noAdmin).toBeNull();
       expect(breaksStillExist.length).toBeGreaterThanOrEqual(3);
+
+      // Si se configura bootstrapAdmin en una BD vacía sin demo data, crea el administrador listo para usar
+      await emptyRepo.initAndSeed({
+        seedDemoData: false,
+        bootstrapAdmin: {
+          email: 'jefe@mitaclock.es',
+          password: 'ClaveAdmin2026!',
+          name: 'Admin Principal',
+        },
+      });
+      const bootAdmin = await emptyRepo.findUserByEmail('jefe@mitaclock.es');
+      expect(bootAdmin).not.toBeNull();
+      expect(bootAdmin?.role).toBe('admin');
+      expect(bootAdmin?.mustChangePassword).toBe(false);
+      expect(bootAdmin?.passwordHash).toBeTruthy();
     } finally {
       await emptyRepo.close();
+    }
+  });
+
+  it('repara el acceso de cuentas demo sin contraseña o bloqueadas en entorno de pruebas cuando repairDemoAccounts=true', async () => {
+    const brokenRepo = await createTestPgRepo({ seedDemoData: true, demoMustChangePassword: true });
+    try {
+      const before = await brokenRepo.findUserByEmail('admin@mitaclock.es');
+      expect(before?.passwordHash).toBeNull();
+      expect(before?.mustChangePassword).toBe(true);
+
+      await brokenRepo.initAndSeed({
+        seedDemoData: true,
+        seedDemoPassword: 'MiTaDemo2026!',
+        demoMustChangePassword: false,
+        repairDemoAccounts: true,
+      });
+
+      const after = await brokenRepo.findUserByEmail('admin@mitaclock.es');
+      expect(after?.passwordHash).toBeTruthy();
+      expect(after?.mustChangePassword).toBe(false);
+      expect(after?.isActive).toBe(true);
+    } finally {
+      await brokenRepo.close();
     }
   });
 

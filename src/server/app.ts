@@ -66,6 +66,7 @@ import {
 export interface AppOptions {
   jwtSecret?: string;
   allowDemoAuth?: boolean;
+  demoPasswordHint?: string;
   mitaSyncKey?: string;
   maxLoginAttempts?: number;
   loginWindowMs?: number;
@@ -249,7 +250,11 @@ export function createApp(repo: ClockRepository, options: AppOptions = {}) {
       return;
     }
     const accounts = await repo.listDemoAccounts();
-    res.json({ enabled: true, accounts });
+    res.json({
+      enabled: true,
+      accounts,
+      ...(options.demoPasswordHint ? { defaultPasswordHint: options.demoPasswordHint } : {}),
+    });
   });
 
   app.post('/api/auth/login', async (req, res) => {

@@ -85,6 +85,28 @@ async function fetchWithTimeout(
   }
 }
 
+const SESSION_TOKEN_STORAGE_KEY = 'mita_clock_session_token_v1';
+
+function readStoredSessionToken(): string | null {
+  try {
+    return window.localStorage.getItem(SESSION_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredSessionToken(token: string | null): void {
+  try {
+    if (token) {
+      window.localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
 interface ApiFetchOptions {
   timeoutMs?: number;
   retryOnWakeup?: boolean;
@@ -97,6 +119,10 @@ async function apiFetch<T>(
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('X-Requested-With', 'MiTaClock');
+  const storedToken = readStoredSessionToken();
+  if (storedToken && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${storedToken}`);
+  }
   if (init.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
@@ -125,6 +151,9 @@ async function apiFetch<T>(
 
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
+          if (res.status === 401 && !url.includes('/auth/login') && !url.includes('/auth/demo-login')) {
+            writeStoredSessionToken(null);
+          }
           if (retryOnWakeup && isWakeupTransientStatus(res.status) && attempt < maxAttempts) {
             setServerStatus('connecting');
             await delay(attempt === 1 ? 2_000 : 4_000);
@@ -165,19 +194,27 @@ export const api = {
   getMe: () => apiFetch<{ user: UserPublic }>('/api/v1/auth/me'),
 
   getDemoAccounts: () =>
-    apiFetch<{ enabled: boolean; accounts: DemoAccountInfo[] }>('/api/v1/auth/demo-accounts'),
+    apiFetch<{ enabled: boolean; accounts: DemoAccountInfo[]; defaultPasswordHint?: string }>(
+      '/api/v1/auth/demo-accounts',
+    ),
 
-  login: (email: string, password: string) =>
-    apiFetch<{ user: UserPublic }>('/api/v1/auth/login', {
+  login: async (email: string, password: string) => {
+    const res = await apiFetch<{ user: UserPublic; token?: string }>('/api/v1/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
-    }),
+    });
+    if (res.token) writeStoredSessionToken(res.token);
+    return res;
+  },
 
-  demoLogin: (email: string) =>
-    apiFetch<{ user: UserPublic }>('/api/v1/auth/demo-login', {
+  demoLogin: async (email: string) => {
+    const res = await apiFetch<{ user: UserPublic; token?: string }>('/api/v1/auth/demo-login', {
       method: 'POST',
       body: JSON.stringify({ email }),
-    }),
+    });
+    if (res.token) writeStoredSessionToken(res.token);
+    return res;
+  },
 
   changePassword: (newPassword: string, currentPassword?: string) =>
     apiFetch<{ user: UserPublic }>('/api/v1/auth/change-password', {
@@ -185,10 +222,15 @@ export const api = {
       body: JSON.stringify({ newPassword, currentPassword }),
     }),
 
-  logout: () =>
-    apiFetch<{ ok: boolean }>('/api/v1/auth/logout', {
-      method: 'POST',
-    }),
+  logout: async () => {
+    try {
+      return await apiFetch<{ ok: boolean }>('/api/v1/auth/logout', {
+        method: 'POST',
+      });
+    } finally {
+      writeStoredSessionToken(null);
+    }
+  },
 
   getBreakTypes: () => apiFetch<{ breakTypes: BreakType[] }>('/api/v1/break-types'),
 

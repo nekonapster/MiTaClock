@@ -231,6 +231,13 @@ export interface InitAndSeedOptions {
   seedDemoData?: boolean;
   seedDemoPassword?: string;
   demoMustChangePassword?: boolean;
+  repairDemoAccounts?: boolean;
+  bootstrapAdmin?: {
+    email: string;
+    password: string;
+    name?: string;
+    resetPasswordIfExists?: boolean;
+  };
 }
 
 /**

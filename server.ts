@@ -51,13 +51,33 @@ async function createExecutor(): Promise<{ executor: SqlExecutor; mode: 'postgre
   };
 }
 
+function resolveServerJwtSecret(isProd: boolean): string {
+  if (isProd || (process.env.JWT_SECRET?.trim() ?? '').length > 0) {
+    return resolveJwtSecret();
+  }
+  const dataDir = path.resolve(process.cwd(), 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const secretFile = path.join(dataDir, '.jwt-dev-secret');
+  try {
+    const existing = fs.readFileSync(secretFile, 'utf8').trim();
+    if (existing.length >= 32) {
+      return existing;
+    }
+  } catch {
+    // file does not exist yet
+  }
+  const generated = resolveJwtSecret();
+  fs.writeFileSync(secretFile, generated, { mode: 0o600 });
+  return generated;
+}
+
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
   const port = Number(process.env.PORT || 3000);
   const mitaMode = (process.env.MITA_MODE?.trim() || 'fake').toLowerCase();
 
   // Validar JWT_SECRET antes de abrir conexiones para fallar rápido en producción si falta o es débil
-  const jwtSecret = resolveJwtSecret();
+  const jwtSecret = resolveServerJwtSecret(isProd);
 
   const { executor, mode } = await createExecutor();
   const unpooledConnectionString = process.env.DATABASE_URL_UNPOOLED?.trim() || undefined;
@@ -71,7 +91,24 @@ async function startServer() {
       ? process.env.SEED_DEMO_DATA.trim().toLowerCase() === 'true'
       : !isProd;
 
-  await repo.initAndSeed({ seedDemoData });
+  const allowDemoAuth = process.env.ALLOW_DEMO_AUTH
+    ? process.env.ALLOW_DEMO_AUTH.trim().toLowerCase() === 'true'
+    : !isProd || seedDemoData;
+
+  const seedDemoPassword =
+    process.env.SEED_DEMO_PASSWORD?.trim() || (!isProd && allowDemoAuth ? 'MiTaDemo2026!' : '');
+
+  const demoMustChangePassword =
+    process.env.DEMO_MUST_CHANGE_PASSWORD !== undefined
+      ? process.env.DEMO_MUST_CHANGE_PASSWORD.trim().toLowerCase() === 'true'
+      : isProd;
+
+  await repo.initAndSeed({
+    seedDemoData,
+    seedDemoPassword,
+    demoMustChangePassword,
+    repairDemoAccounts: !isProd && allowDemoAuth,
+  });
 
   const gateway: MitaGateway =
     mitaMode === 'fake'
@@ -81,9 +118,8 @@ async function startServer() {
   const app = createApp(repo, {
     jwtSecret,
     mitaGateway: gateway,
-    allowDemoAuth: process.env.ALLOW_DEMO_AUTH
-      ? process.env.ALLOW_DEMO_AUTH.trim().toLowerCase() === 'true'
-      : !isProd || seedDemoData,
+    allowDemoAuth,
+    demoPasswordHint: !isProd && allowDemoAuth && seedDemoPassword ? seedDemoPassword : undefined,
   });
 
   // Nota: En Render (plan gratuito), el servicio entra en suspensión tras inactividad.

@@ -17,7 +17,11 @@ npm install
 npm run dev
 ```
 
-Si `DATABASE_URL` no está definida en desarrollo local, el servidor usa un almacenamiento local con PGlite en `./data/pglite-dev`. Para usar PostgreSQL/Neon en local, copia `.env.example` a `.env` y define `DATABASE_URL`.
+Si `DATABASE_URL` no está definida en desarrollo local, el servidor usa un almacenamiento PostgreSQL persistente local con PGlite en `./data/pglite-dev` (y mantiene el secreto de sesión local en `./data/.jwt-dev-secret`). Para usar PostgreSQL/Neon en local, copia `.env.example` a `.env` y define `DATABASE_URL`. Si alguna vez necesitas regenerar o recuperar el administrador inicial en local o en Neon, ejecuta:
+
+```bash
+npm run db:ensure-admin
+```
 
 ### Pruebas y compilación
 
@@ -68,6 +72,7 @@ Puedes importar `render.yaml` directamente (**New → Blueprint**) o configurar 
 | `MITA_MODE` | `fake` | Sí |
 | `SEED_DEMO_DATA` | `true` solo la primera vez si quieres crear 1 admin + 3 empleados demo (pon `false` después o en entorno real) | Opcional (`false`) |
 | `ALLOW_DEMO_AUTH` | `false` en producción real (`true` solo para entorno de demostración) | Opcional (`false`) |
+| `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | Crea automáticamente el primer administrador real en una BD Neon vacía sin activar cuentas demo | Opcional |
 | `MITA_SYNC_KEY` | Clave compartida para `X-MiTa-Api-Key` de MiTa v2.0 | Opcional |
 
 ### 4. Verificar que funciona (`/health`)
