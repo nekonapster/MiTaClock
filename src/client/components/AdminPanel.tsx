@@ -9,6 +9,7 @@ import {
   ClipboardCheck,
   Clock,
   Coffee,
+  Edit2,
   FileText,
   Plus,
   RefreshCw,
@@ -72,6 +73,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUserId }) => {
   const [tab, setTab] = useState<AdminTab>('live');
   const [overview, setOverview] = useState<AdminEmployeeOverview[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [staffAccounts, setStaffAccounts] = useState<Employee[]>([]);
   const [breakTypes, setBreakTypes] = useState<BreakType[]>([]);
   const [mitaEvents, setMitaEvents] = useState<MitaExportEvent[]>([]);
   const [mitaFilter, setMitaFilter] = useState<'all' | 'enviado' | 'confirmado'>('all');
@@ -117,6 +119,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUserId }) => {
   const [newRole, setNewRole] = useState<UserRole>('employee');
   const [newExternalRef, setNewExternalRef] = useState('');
 
+  // Edición / eliminación de empleado existente
+  const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editRole, setEditRole] = useState<UserRole>('employee');
+  const [editExternalRef, setEditExternalRef] = useState('');
+  const [editPassword, setEditPassword] = useState('');
+  const [editStatus, setEditStatus] = useState<'active' | 'inactive'>('active');
+  const [savingEmployeeEdit, setSavingEmployeeEdit] = useState(false);
+  const [confirmDeleteEmployeeId, setConfirmDeleteEmployeeId] = useState<string | null>(null);
+  const [deletingEmployeeId, setDeletingEmployeeId] = useState<string | null>(null);
+
   // Formulario nuevo tipo de pausa
   const [breakCode, setBreakCode] = useState('');
   const [breakName, setBreakName] = useState('');
@@ -126,9 +140,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUserId }) => {
     setLoading(true);
     setError(null);
     try {
-      const [ov, emp, bt, mita, corrs, sess, aud, outbox, openRes, summaryRes] = await Promise.all([
+      const [ov, emp, allEmp, bt, mita, corrs, sess, aud, outbox, openRes, summaryRes] = await Promise.all([
         api.getAdminOverview(),
-        api.getAdminEmployees(),
+        api.getAdminEmployees(false),
+        api.getAdminEmployees(true),
         api.getBreakTypes(),
         api.getMitaEvents(mitaFilter === 'all' ? undefined : mitaFilter),
         api.getCorrections({
@@ -152,6 +167,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUserId }) => {
       ]);
       setOverview(ov.employees);
       setEmployees(emp.employees);
+      setStaffAccounts(allEmp.employees);
       if (!adminCorrEmployeeId && emp.employees.length > 0) {
         setAdminCorrEmployeeId(emp.employees[0].id);
       }
@@ -312,15 +328,89 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUserId }) => {
 
   const handleToggleEmployeeStatus = async (emp: Employee) => {
     setError(null);
+    setNotice(null);
     const nextStatus = emp.status === 'active' ? 'inactive' : 'active';
     try {
       await api.updateEmployee(emp.id, {
         status: nextStatus,
         isUserActive: nextStatus === 'active',
       });
+      setNotice(
+        `${emp.name} ha sido ${nextStatus === 'active' ? 'reactivado' : 'desactivado'}.`,
+      );
       await loadAll();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'No se pudo actualizar el empleado.');
+    }
+  };
+
+  const handleStartEditEmployee = (emp: Employee) => {
+    setError(null);
+    setNotice(null);
+    setConfirmDeleteEmployeeId(null);
+    setEditingEmployeeId(emp.id);
+    setEditName(emp.name);
+    setEditEmail(emp.email);
+    setEditRole(emp.role);
+    setEditExternalRef(emp.externalRef ?? '');
+    setEditPassword('');
+    setEditStatus(emp.status);
+  };
+
+  const handleCancelEditEmployee = () => {
+    setEditingEmployeeId(null);
+    setEditPassword('');
+  };
+
+  const handleSaveEmployeeEdit = async (e: React.FormEvent, emp: Employee) => {
+    e.preventDefault();
+    setError(null);
+    setNotice(null);
+
+    if (editPassword.length > 0 && editPassword.length < 6) {
+      setError('La nueva contraseña debe tener al menos 6 caracteres.');
+      return;
+    }
+
+    setSavingEmployeeEdit(true);
+    try {
+      await api.updateEmployee(emp.id, {
+        name: editName.trim(),
+        email: editEmail.trim().toLowerCase(),
+        role: editRole,
+        externalRef: editExternalRef.trim() || null,
+        status: editStatus,
+        isUserActive: editStatus === 'active',
+        ...(editPassword.length > 0 ? { password: editPassword } : {}),
+      });
+      setEditingEmployeeId(null);
+      setEditPassword('');
+      setNotice(`Datos de ${editName.trim()} actualizados correctamente.`);
+      await loadAll();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'No se pudieron guardar los cambios.');
+    } finally {
+      setSavingEmployeeEdit(false);
+    }
+  };
+
+  const handleConfirmDeleteEmployee = async (emp: Employee) => {
+    setError(null);
+    setNotice(null);
+    setDeletingEmployeeId(emp.id);
+    try {
+      await api.deleteEmployee(emp.id);
+      setConfirmDeleteEmployeeId(null);
+      if (editingEmployeeId === emp.id) {
+        setEditingEmployeeId(null);
+      }
+      setNotice(`Usuario ${emp.name} eliminado correctamente.`);
+      await loadAll();
+    } catch (err) {
+      setConfirmDeleteEmployeeId(null);
+      setError(err instanceof ApiError ? err.message : 'No se pudo eliminar el empleado.');
+    } finally {
+      setDeletingEmployeeId(null);
     }
   };
 
@@ -1097,27 +1187,221 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUserId }) => {
           </form>
 
           <div className="lg:col-span-7 rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+            <div className="border-b border-slate-100 bg-slate-50 px-5 py-3.5 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Directorio de personal ({staffAccounts.length})
+              </h2>
+              <span className="text-xs text-slate-500">
+                Edita datos o elimina cuentas sin historial inmutable
+              </span>
+            </div>
             <ul className="divide-y divide-slate-100">
-              {employees.map((emp) => (
-                <li key={emp.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">{emp.name}</p>
-                    <p className="text-xs text-slate-500">
-                      {emp.email} · {emp.externalRef ?? 'Sin external_ref'} ·{' '}
-                      <span className={emp.status === 'active' ? 'text-emerald-700' : 'text-rose-700'}>
-                        {emp.status === 'active' ? 'Activo' : 'Desactivado'}
-                      </span>
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleToggleEmployeeStatus(emp)}
-                    className="min-h-[38px] rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                  >
-                    {emp.status === 'active' ? 'Desactivar' : 'Reactivar'}
-                  </button>
-                </li>
-              ))}
+              {staffAccounts.map((emp) => {
+                const isSelf = emp.userId === currentUserId;
+                const isEditing = editingEmployeeId === emp.id;
+                const isConfirmingDelete = confirmDeleteEmployeeId === emp.id;
+
+                return (
+                  <li key={emp.id} className="px-5 py-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-semibold text-slate-900">{emp.name}</p>
+                          <span
+                            className={`text-[11px] font-semibold ${
+                              emp.role === 'admin' ? 'text-blue-700' : 'text-slate-500'
+                            }`}
+                          >
+                            {emp.role === 'admin' ? 'Administrador' : 'Empleado'}
+                          </span>
+                          {isSelf && (
+                            <span className="text-[11px] font-medium text-emerald-700">
+                              (Tu sesión actual)
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          {emp.email} · {emp.externalRef ?? 'Sin external_ref'} ·{' '}
+                          <span className={emp.status === 'active' ? 'text-emerald-700 font-medium' : 'text-rose-700 font-medium'}>
+                            {emp.status === 'active' ? 'Activo' : 'Desactivado'}
+                          </span>
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            isEditing ? handleCancelEditEmployee() : handleStartEditEmployee(emp)
+                          }
+                          className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50/50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          {isEditing ? 'Cerrar edición' : 'Editar'}
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isSelf}
+                          onClick={() => handleToggleEmployeeStatus(emp)}
+                          title={isSelf ? 'No puedes desactivar tu propia cuenta' : undefined}
+                          className="min-h-[36px] rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {emp.status === 'active' ? 'Desactivar' : 'Reactivar'}
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isSelf || deletingEmployeeId === emp.id}
+                          onClick={() => {
+                            setEditingEmployeeId(null);
+                            setConfirmDeleteEmployeeId(isConfirmingDelete ? null : emp.id);
+                          }}
+                          title={isSelf ? 'No puedes eliminar tu propia cuenta' : undefined}
+                          className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          Eliminar
+                        </button>
+                      </div>
+                    </div>
+
+                    {isEditing && (
+                      <form
+                        onSubmit={(e) => handleSaveEmployeeEdit(e, emp)}
+                        className="rounded-xl border border-blue-200 bg-slate-50 p-4 space-y-3"
+                      >
+                        <p className="text-xs font-semibold text-slate-800">
+                          Editar perfil y credenciales de {emp.name}
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600">
+                              Nombre completo
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={editName}
+                              onChange={(e) => setEditName(e.target.value)}
+                              className="mt-1 min-h-[40px] w-full rounded-lg border border-slate-300 bg-white px-3 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600">
+                              Email de acceso
+                            </label>
+                            <input
+                              type="email"
+                              required
+                              value={editEmail}
+                              onChange={(e) => setEditEmail(e.target.value)}
+                              className="mt-1 min-h-[40px] w-full rounded-lg border border-slate-300 bg-white px-3 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600">
+                              external_ref MiTa
+                            </label>
+                            <input
+                              type="text"
+                              value={editExternalRef}
+                              onChange={(e) => setEditExternalRef(e.target.value)}
+                              placeholder="MITA-EMP-104"
+                              className="mt-1 min-h-[40px] w-full rounded-lg border border-slate-300 bg-white px-3 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600">
+                              Rol
+                            </label>
+                            <select
+                              value={editRole}
+                              disabled={isSelf}
+                              onChange={(e) => setEditRole(e.target.value as UserRole)}
+                              className="mt-1 min-h-[40px] w-full rounded-lg border border-slate-300 bg-white px-3 text-xs disabled:bg-slate-100 disabled:text-slate-500"
+                            >
+                              <option value="employee">Empleado</option>
+                              <option value="admin">Administrador</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600">
+                              Estado
+                            </label>
+                            <select
+                              value={editStatus}
+                              disabled={isSelf}
+                              onChange={(e) =>
+                                setEditStatus(e.target.value as 'active' | 'inactive')
+                              }
+                              className="mt-1 min-h-[40px] w-full rounded-lg border border-slate-300 bg-white px-3 text-xs disabled:bg-slate-100 disabled:text-slate-500"
+                            >
+                              <option value="active">Activo</option>
+                              <option value="inactive">Desactivado</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600">
+                              Nueva contraseña (opcional, mín. 6)
+                            </label>
+                            <input
+                              type="password"
+                              value={editPassword}
+                              onChange={(e) => setEditPassword(e.target.value)}
+                              placeholder="Dejar vacío para mantener la actual"
+                              className="mt-1 min-h-[40px] w-full rounded-lg border border-slate-300 bg-white px-3 text-xs"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <button
+                            type="submit"
+                            disabled={savingEmployeeEdit}
+                            className="min-h-[38px] rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+                          >
+                            {savingEmployeeEdit ? 'Guardando...' : 'Guardar cambios'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelEditEmployee}
+                            className="min-h-[38px] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {isConfirmingDelete && (
+                      <div className="rounded-xl border border-rose-200 bg-rose-50 p-3.5 flex flex-wrap items-center justify-between gap-3">
+                        <p className="text-xs text-rose-900">
+                          ¿Eliminar permanentemente a <strong>{emp.name}</strong>? Solo es posible si
+                          no tiene fichajes, correcciones ni auditoría asociados.
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={deletingEmployeeId === emp.id}
+                            onClick={() => handleConfirmDeleteEmployee(emp)}
+                            className="min-h-[36px] rounded-lg bg-rose-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+                          >
+                            {deletingEmployeeId === emp.id ? 'Eliminando...' : 'Confirmar eliminar'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteEmployeeId(null)}
+                            className="min-h-[36px] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         </div>

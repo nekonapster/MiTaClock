@@ -573,7 +573,10 @@ export const api = {
   getAdminOverview: () =>
     apiFetch<{ employees: AdminEmployeeOverview[]; totalEvents: number }>('/api/v1/admin/overview'),
 
-  getAdminEmployees: () => apiFetch<{ employees: Employee[] }>('/api/v1/admin/employees'),
+  getAdminEmployees: (includeAdmins: boolean = false) =>
+    apiFetch<{ employees: Employee[] }>(
+      `/api/v1/admin/employees${includeAdmins ? '?includeAdmins=true' : ''}`,
+    ),
 
   createEmployee: (payload: {
     name: string;
@@ -591,6 +594,9 @@ export const api = {
     id: string,
     payload: {
       name?: string;
+      email?: string;
+      role?: UserRole;
+      password?: string;
       externalRef?: string | null;
       status?: 'active' | 'inactive';
       isUserActive?: boolean;
@@ -600,6 +606,14 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
+
+  deleteEmployee: (id: string) =>
+    apiFetch<{ ok: boolean; deletedId: string }>(
+      `/api/v1/admin/employees/${encodeURIComponent(id)}`,
+      {
+        method: 'DELETE',
+      },
+    ),
 
   createBreakType: (payload: { code: string; name: string; isPaid: boolean }) =>
     apiFetch<{ breakType: BreakType }>('/api/v1/admin/break-types', {

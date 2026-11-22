@@ -2632,8 +2632,9 @@ export function createApp(repo: ClockRepository, options: AppOptions = {}) {
     res.json({ employees: overview, totalEvents: allEvents.length });
   });
 
-  app.get('/api/admin/employees', requireAuth, requireAdmin, async (_req, res) => {
-    const employees = await repo.listEmployees();
+  app.get('/api/admin/employees', requireAuth, requireAdmin, async (req, res) => {
+    const includeAdmins = req.query.includeAdmins === 'true';
+    const employees = await repo.listEmployees(includeAdmins);
     res.json({ employees });
   });
 
@@ -2674,25 +2675,179 @@ export function createApp(repo: ClockRepository, options: AppOptions = {}) {
     res.status(201).json({ employee });
   });
 
-  app.patch('/api/admin/employees/:id', requireAuth, requireAdmin, async (req, res) => {
+  app.patch('/api/admin/employees/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res) => {
+    const existing = await repo.findEmployeeById(req.params.id);
+    if (!existing) {
+      res.status(404).json({ error: 'Empleado no encontrado.' });
+      return;
+    }
+
+    let nextName: string | undefined;
+    if (req.body?.name !== undefined) {
+      if (typeof req.body.name !== 'string' || !req.body.name.trim()) {
+        res.status(400).json({ error: 'El nombre completo es obligatorio.' });
+        return;
+      }
+      nextName = req.body.name.trim();
+    }
+
+    let nextEmail: string | undefined;
+    if (req.body?.email !== undefined) {
+      const normalized =
+        typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+      if (!normalized || !normalized.includes('@')) {
+        res.status(400).json({ error: 'El correo electrónico no es válido.' });
+        return;
+      }
+      if (normalized !== existing.email.toLowerCase()) {
+        const collision = await repo.findUserByEmail(normalized);
+        if (collision && collision.id !== existing.userId) {
+          res.status(409).json({ error: 'Ya existe otro usuario con ese correo electrónico.' });
+          return;
+        }
+      }
+      nextEmail = normalized;
+    }
+
+    let nextRole: UserRole | undefined;
+    if (req.body?.role !== undefined) {
+      if (req.body.role !== 'employee' && req.body.role !== 'admin') {
+        res.status(400).json({ error: 'Rol inválido. Debe ser employee o admin.' });
+        return;
+      }
+      if (existing.userId === req.authUser!.id && req.body.role !== 'admin') {
+        res.status(409).json({
+          error: 'No puedes quitarte el rol de administrador a tu propia cuenta.',
+        });
+        return;
+      }
+      nextRole = req.body.role;
+    }
+
+    let passwordHash: string | undefined;
+    if (typeof req.body?.password === 'string' && req.body.password.length > 0) {
+      if (req.body.password.length < 6) {
+        res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres.' });
+        return;
+      }
+      passwordHash = bcrypt.hashSync(req.body.password, 10);
+    }
+
+    const nextStatus: 'active' | 'inactive' | undefined =
+      req.body?.status === 'active' || req.body?.status === 'inactive'
+        ? req.body.status
+        : undefined;
+    const nextIsUserActive: boolean | undefined =
+      typeof req.body?.isUserActive === 'boolean'
+        ? req.body.isUserActive
+        : nextStatus !== undefined
+          ? nextStatus === 'active'
+          : undefined;
+
+    if (
+      existing.userId === req.authUser!.id &&
+      (nextStatus === 'inactive' || nextIsUserActive === false)
+    ) {
+      res.status(409).json({ error: 'No puedes desactivar tu propia cuenta de administrador.' });
+      return;
+    }
+
     const updated = await repo.updateEmployee(req.params.id, {
-      name: typeof req.body?.name === 'string' ? req.body.name : undefined,
+      name: nextName,
+      email: nextEmail,
+      role: nextRole,
+      passwordHash,
       externalRef:
         req.body?.externalRef === null
           ? null
           : typeof req.body?.externalRef === 'string'
             ? req.body.externalRef.trim() || null
             : undefined,
-      status:
-        req.body?.status === 'active' || req.body?.status === 'inactive' ? req.body.status : undefined,
-      isUserActive: typeof req.body?.isUserActive === 'boolean' ? req.body.isUserActive : undefined,
+      status: nextStatus,
+      isUserActive: nextIsUserActive,
     });
 
     if (!updated) {
       res.status(404).json({ error: 'Empleado no encontrado.' });
       return;
     }
+
+    await repo.appendAuditLog({
+      id: crypto.randomUUID(),
+      actorUserId: req.authUser!.id,
+      action: 'employee.updated',
+      entityType: 'employee',
+      entityId: updated.id,
+      details: {
+        before: {
+          name: existing.name,
+          email: existing.email,
+          role: existing.role,
+          externalRef: existing.externalRef,
+          status: existing.status,
+          isUserActive: existing.isUserActive,
+        },
+        after: {
+          name: updated.name,
+          email: updated.email,
+          role: updated.role,
+          externalRef: updated.externalRef,
+          status: updated.status,
+          isUserActive: updated.isUserActive,
+          passwordChanged: Boolean(passwordHash),
+        },
+      },
+      ipAddress: getClientIp(req),
+      userAgent: getUserAgent(req),
+      createdAt: nowProvider().toISOString(),
+    });
+
     res.json({ employee: updated });
+  });
+
+  app.delete('/api/admin/employees/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res) => {
+    const existing = await repo.findEmployeeById(req.params.id);
+    if (!existing) {
+      res.status(404).json({ error: 'Empleado no encontrado.' });
+      return;
+    }
+
+    if (existing.userId === req.authUser!.id) {
+      res.status(409).json({ error: 'No puedes eliminar tu propia cuenta de administrador.' });
+      return;
+    }
+
+    const result = await repo.deleteEmployee(req.params.id);
+    if (!result.deleted) {
+      if (result.reason === 'not_found') {
+        res.status(404).json({ error: 'Empleado no encontrado.' });
+        return;
+      }
+      res.status(409).json({
+        error:
+          'No se puede eliminar este empleado porque tiene fichajes, correcciones o registros de auditoría inmutables asociados. Puedes desactivarlo en su lugar.',
+      });
+      return;
+    }
+
+    await repo.appendAuditLog({
+      id: crypto.randomUUID(),
+      actorUserId: req.authUser!.id,
+      action: 'employee.deleted',
+      entityType: 'employee',
+      entityId: result.employee.id,
+      details: {
+        name: result.employee.name,
+        email: result.employee.email,
+        role: result.employee.role,
+        externalRef: result.employee.externalRef,
+      },
+      ipAddress: getClientIp(req),
+      userAgent: getUserAgent(req),
+      createdAt: nowProvider().toISOString(),
+    });
+
+    res.json({ ok: true, deletedId: result.employee.id });
   });
 
   app.post('/api/admin/break-types', requireAuth, requireAdmin, async (req, res) => {

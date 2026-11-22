@@ -232,6 +232,117 @@ describe('API REST MiTa Clock — Auth, RBAC, Fichajes y Sincronización MiTa v2
     expect(loginRes.body.user.employeeName).toBe('Marta Gómez');
   });
 
+  it('permite al admin editar datos/credenciales y eliminar empleados sin historial, protegiendo fichajes inmutables', async () => {
+    const adminLogin = await request(app)
+      .post('/api/v1/auth/demo-login')
+      .set('X-Requested-With', 'MiTaClock')
+      .send({ email: 'admin@mitaclock.es' });
+    const adminCookie = adminLogin.headers['set-cookie'];
+
+    const createRes = await request(app)
+      .post('/api/v1/admin/employees')
+      .set('X-Requested-With', 'MiTaClock')
+      .set('Cookie', adminCookie)
+      .send({
+        name: 'Laura Ruiz',
+        email: 'laura@mitaclock.es',
+        password: 'clave-inicial-123',
+        role: 'employee',
+        externalRef: 'MITA-EMP-301',
+      });
+    expect(createRes.status).toBe(201);
+    const createdId = createRes.body.employee.id as string;
+
+    // Colisión de email con un usuario existente -> 409
+    const duplicateEmailRes = await request(app)
+      .patch(`/api/v1/admin/employees/${createdId}`)
+      .set('X-Requested-With', 'MiTaClock')
+      .set('Cookie', adminCookie)
+      .send({ email: 'lucia@mitaclock.es' });
+    expect(duplicateEmailRes.status).toBe(409);
+
+    // Edición completa: nombre, email, rol, externalRef y nueva contraseña
+    const patchRes = await request(app)
+      .patch(`/api/v1/admin/employees/${createdId}`)
+      .set('X-Requested-With', 'MiTaClock')
+      .set('Cookie', adminCookie)
+      .send({
+        name: 'Laura Ruiz Navarro',
+        email: 'laura.navarro@mitaclock.es',
+        role: 'admin',
+        externalRef: 'MITA-ADM-301',
+        password: 'nueva-clave-segura-456',
+      });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body.employee.name).toBe('Laura Ruiz Navarro');
+    expect(patchRes.body.employee.email).toBe('laura.navarro@mitaclock.es');
+    expect(patchRes.body.employee.role).toBe('admin');
+    expect(patchRes.body.employee.externalRef).toBe('MITA-ADM-301');
+
+    // Puede iniciar sesión con el nuevo email y contraseña
+    const newLogin = await request(app)
+      .post('/api/v1/auth/login')
+      .set('X-Requested-With', 'MiTaClock')
+      .send({ email: 'laura.navarro@mitaclock.es', password: 'nueva-clave-segura-456' });
+    expect(newLogin.status).toBe(200);
+    expect(newLogin.body.user.role).toBe('admin');
+
+    // Al cambiar a rol admin sigue apareciendo cuando se solicita includeAdmins=true
+    const listAll = await request(app)
+      .get('/api/v1/admin/employees?includeAdmins=true')
+      .set('Cookie', adminCookie);
+    expect(listAll.status).toBe(200);
+    expect(listAll.body.employees.some((e: { id: string }) => e.id === createdId)).toBe(true);
+
+    // Eliminar empleado sin fichajes ni historial inmutable -> 200
+    const deleteRes = await request(app)
+      .delete(`/api/v1/admin/employees/${createdId}`)
+      .set('X-Requested-With', 'MiTaClock')
+      .set('Cookie', adminCookie);
+    expect(deleteRes.status).toBe(200);
+    expect(deleteRes.body.ok).toBe(true);
+    expect(deleteRes.body.deletedId).toBe(createdId);
+
+    const listAfterDelete = await request(app)
+      .get('/api/v1/admin/employees?includeAdmins=true')
+      .set('Cookie', adminCookie);
+    expect(listAfterDelete.body.employees.some((e: { id: string }) => e.id === createdId)).toBe(false);
+
+    // Un empleado que sí tiene fichajes registrados NO puede ser eliminado (409)
+    const luciaLogin = await request(app)
+      .post('/api/v1/auth/demo-login')
+      .set('X-Requested-With', 'MiTaClock')
+      .send({ email: 'lucia@mitaclock.es' });
+    const luciaEmpId = luciaLogin.body.user.employeeId as string;
+
+    const clockRes = await request(app)
+      .post('/api/v1/clock-events')
+      .set('X-Requested-With', 'MiTaClock')
+      .set('Cookie', luciaLogin.headers['set-cookie'])
+      .send({
+        id: '77777777-7777-4777-8777-777777777771',
+        type: 'shift_start',
+        deviceDeclaredAt: new Date().toISOString(),
+        deviceOffsetMs: 0,
+      });
+    expect(clockRes.status).toBe(201);
+
+    const deleteWithEventsRes = await request(app)
+      .delete(`/api/v1/admin/employees/${luciaEmpId}`)
+      .set('X-Requested-With', 'MiTaClock')
+      .set('Cookie', adminCookie);
+    expect(deleteWithEventsRes.status).toBe(409);
+
+    // El admin tampoco puede eliminarse a sí mismo
+    const adminList = listAfterDelete.body.employees as Array<{ id: string; email: string }>;
+    const selfAdmin = adminList.find((e) => e.email === 'admin@mitaclock.es')!;
+    const selfDeleteRes = await request(app)
+      .delete(`/api/v1/admin/employees/${selfAdmin.id}`)
+      .set('X-Requested-With', 'MiTaClock')
+      .set('Cookie', adminCookie);
+    expect(selfDeleteRes.status).toBe(409);
+  });
+
   it('expone /health verificando PostgreSQL (200 ok / 503 si cae BD)', async () => {
     const okRes = await request(app).get('/health');
     expect(okRes.status).toBe(200);

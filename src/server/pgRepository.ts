@@ -59,6 +59,7 @@ import type {
   CreatePlannedShiftInput,
   CreateShiftTemplateInput,
   CreateUserEmployeeInput,
+  DeleteEmployeeResult,
   InitAndSeedOptions,
   InsertClockEventResult,
   ListClockEventsFilter,
@@ -678,15 +679,82 @@ export class PgClockRepository implements ClockRepository {
         [nextName, nextRef, nextStatus, employeeId],
       );
 
-      if (input.isUserActive !== undefined) {
-        await tx.query(`UPDATE users SET is_active = $1 WHERE id = $2`, [
-          input.isUserActive,
-          existing.userId,
-        ]);
+      const nextEmail =
+        input.email !== undefined ? input.email.trim().toLowerCase() : existing.email;
+      const nextRole = input.role !== undefined ? input.role : existing.role;
+      const nextUserActive =
+        input.isUserActive !== undefined ? input.isUserActive : existing.isUserActive;
+
+      if (input.passwordHash !== undefined) {
+        await tx.query(
+          `UPDATE users SET email = $1, role = $2, is_active = $3, password_hash = $4 WHERE id = $5`,
+          [nextEmail, nextRole, nextUserActive, input.passwordHash, existing.userId],
+        );
+      } else {
+        await tx.query(
+          `UPDATE users SET email = $1, role = $2, is_active = $3 WHERE id = $4`,
+          [nextEmail, nextRole, nextUserActive, existing.userId],
+        );
       }
     });
 
     return this.findEmployeeById(employeeId);
+  }
+
+  async deleteEmployee(employeeId: string): Promise<DeleteEmployeeResult> {
+    const existing = await this.findEmployeeById(employeeId);
+    if (!existing) {
+      return { deleted: false, reason: 'not_found' };
+    }
+
+    return this.executor.withTransaction(async (tx) => {
+      const [eventsRes, correctionsRes, auditRes, incidentsAckRes] = await Promise.all([
+        tx.query<{ cnt: string | number }>(
+          'SELECT COUNT(*) AS cnt FROM clock_events WHERE employee_id = $1',
+          [employeeId],
+        ),
+        tx.query<{ cnt: string | number }>(
+          `
+            SELECT COUNT(*) AS cnt
+            FROM corrections
+            WHERE employee_id = $1 OR requested_by = $2 OR resolved_by = $2
+          `,
+          [employeeId, existing.userId],
+        ),
+        tx.query<{ cnt: string | number }>(
+          'SELECT COUNT(*) AS cnt FROM audit_log WHERE actor_user_id = $1',
+          [existing.userId],
+        ),
+        tx.query<{ cnt: string | number }>(
+          `
+            SELECT COUNT(*) AS cnt
+            FROM session_incidents
+            WHERE acknowledged_by = $1 AND employee_id <> $2
+          `,
+          [existing.userId, employeeId],
+        ),
+      ]);
+
+      const hasImmutableHistory =
+        Number(eventsRes.rows[0]?.cnt ?? 0) > 0 ||
+        Number(correctionsRes.rows[0]?.cnt ?? 0) > 0 ||
+        Number(auditRes.rows[0]?.cnt ?? 0) > 0 ||
+        Number(incidentsAckRes.rows[0]?.cnt ?? 0) > 0;
+
+      if (hasImmutableHistory) {
+        return { deleted: false, reason: 'has_immutable_history' };
+      }
+
+      await tx.query('DELETE FROM session_incidents WHERE employee_id = $1', [employeeId]);
+      await tx.query('DELETE FROM day_offs WHERE employee_id = $1', [employeeId]);
+      await tx.query('DELETE FROM planned_shifts WHERE employee_id = $1', [employeeId]);
+      await tx.query('DELETE FROM shift_templates WHERE employee_id = $1', [employeeId]);
+      await tx.query('DELETE FROM work_sessions WHERE employee_id = $1', [employeeId]);
+      await tx.query('DELETE FROM employees WHERE id = $1', [employeeId]);
+      await tx.query('DELETE FROM users WHERE id = $1', [existing.userId]);
+
+      return { deleted: true, employee: existing };
+    });
   }
 
   async listBreakTypes(activeOnly: boolean = false): Promise<BreakType[]> {

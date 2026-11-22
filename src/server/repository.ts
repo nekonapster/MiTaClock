@@ -41,10 +41,17 @@ export interface CreateUserEmployeeInput {
 
 export interface UpdateEmployeeInput {
   name?: string;
+  email?: string;
+  role?: UserRole;
+  passwordHash?: string;
   externalRef?: string | null;
   status?: 'active' | 'inactive';
   isUserActive?: boolean;
 }
+
+export type DeleteEmployeeResult =
+  | { deleted: true; employee: Employee }
+  | { deleted: false; reason: 'not_found' | 'has_immutable_history' };
 
 export interface CreateBreakTypeInput {
   id: string;
@@ -263,6 +270,7 @@ export interface ClockRepository {
   findEmployeeById(employeeId: string): Promise<Employee | null>;
   createUserAndEmployee(input: CreateUserEmployeeInput): Promise<Employee>;
   updateEmployee(employeeId: string, input: UpdateEmployeeInput): Promise<Employee | null>;
+  deleteEmployee(employeeId: string): Promise<DeleteEmployeeResult>;
 
   listBreakTypes(activeOnly?: boolean): Promise<BreakType[]>;
   createBreakType(input: CreateBreakTypeInput): Promise<BreakType>;
